@@ -8,19 +8,19 @@ import time
 from base64 import b64encode
 
 RECV_SIZE = 1500
-MSS = 1000
+MSS = 1472
 ALPHA = 0.85
-INITIAL_RTT = 500  # in miliseconds
 
 IP_PORT = sys.argv[1]
 UDP_IP = IP_PORT[0:IP_PORT.find(":")]
 UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
 dest = (UDP_IP, UDP_PORT)
 
-window = MSS
+window = 1
+target_window = 8
 last_id_sent = 0
 last_sent_packets = {}
-estimated_rtt = INITIAL_RTT
+estimated_rtt = 500 # in miliseconds
 time_sent = 0
 
 time.sleep(.5)
@@ -54,6 +54,17 @@ def send_packet(packet):
     log("[send packet] id: %d, size: %d" % (packet['id'], len(data)))
 
 
+def next_packet():
+    global last_id_sent
+    packet = {
+        "id": last_id_sent,
+        "eof": False,
+        "ack": False,
+        "data": ""
+    }
+    return packet
+
+
 def send_next_packets():
     global last_id_sent
     global last_sent_packets
@@ -61,52 +72,45 @@ def send_next_packets():
     last_sent_packets = {}
     packets = []
     all_read = False
-    to_read = window
-    while to_read >= MSS:
-        data = sys.stdin.buffer.read(MSS)
-        log("[read stdin] %d bytes" % len(data))
+    for i in range(window):
+        packet = next_packet()
+        #data_size = MSS - len(json.dumps(packet).encode())
+        data_size = 1000
+        data = sys.stdin.buffer.read(data_size)
+        log("[read stdin] %d bytes" % data_size)
         if len(data) == 0:
             all_read = True
             break
-        packet = {
-            "id": last_id_sent,
-            "eof": False,
-            "ack": False,
-            "data": b64encode(data).decode()
-        }
+        packet['data'] = b64encode(data).decode()
         packets.append(packet)
         last_sent_packets[last_id_sent] = packet
-        to_read = - len(data)
         last_id_sent += 1
-    if to_read > 0:
-        data = sys.stdin.buffer.read(to_read)
-        log("[read stdin] %d bytes" % len(data))
-        if len(data) == 0:
-            all_read = True
-        else:
-            packet = {
-                "id": last_id_sent,
-                "eof": False,
-                "ack": False,
-                "data": b64encode(data).decode()
-            }
-            packets.append(packet)
-            last_sent_packets[last_id_sent] = packet
-            last_id_sent += 1
     for packet in packets:
         send_packet(packet)
     return all_read
 
 
+def retransmit_packets(packets):
+    n = min(len(packets), window)
+    i = 0
+    for packet_id in packets:
+        send_packet(packets[packet_id])
+        i += 1
+        if i > 1: break
+
+
 def listen_and_retransmit():
+    global window
+    global target_window
+    time_out = False
     while len(last_sent_packets) > 0:
         received_ack = []
         for i in range(len(last_sent_packets)):
             try:
                 recv = sock.recvfrom(RECV_SIZE)
-                if i == 0:
+                if i == len(last_sent_packets):
                     calc_new_rtt(time.time() - time_sent)
-                    (data, addr) = recv
+                (data, addr) = recv
                 try:
                     decoded = json.loads(data.decode())
                     log("[recv pkt] %s" % decoded)
@@ -115,13 +119,21 @@ def listen_and_retransmit():
                 except (ValueError, KeyError, TypeError):
                     log("[recv corrupt packet]")
             except socket.timeout:
+                time_out = True
                 log("[error] timeout")
                 break
         for ack in received_ack:
             if ack in last_sent_packets:
-                last_sent_packets.pop(ack)
-        for packet_id in last_sent_packets:
-            send_packet(last_sent_packets[packet_id])
+                last_sent_packets.pop(ack)        
+        if time_out:
+            window = 1
+            target_window = target_window / 2
+        else:
+            if window < target_window:
+                window = window * 2
+            else:
+                window += 1
+        retransmit_packets(last_sent_packets)
 
 
 all_sent = False
