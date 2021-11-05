@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+
+import datetime
+import json
+import sys
+import socket
+
+from base64 import b64decode
+
+def log(string):
+    sys.stderr.write(datetime.datetime.now().strftime(
+        "%H:%M:%S.%f") + " 3700recv: " + string + "\n")
+
+MSG_SIZE = 1500
+TIMEOUT = 30
+
+# Bind to localhost and an ephemeral port
+UDP_IP = "127.0.0.1"
+UDP_PORT = int(sys.argv[1])
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind((UDP_IP, UDP_PORT))
+sock.settimeout(TIMEOUT)
+
+# Get port we bound to
+UDP_PORT = sock.getsockname()[1]
+log("[bound] " + str(UDP_PORT))
+
+received = []
+receivedID = {}
+eof = False
+# Now listen for packets
+while not eof:
+    recv = sock.recvfrom(MSG_SIZE)
+    # If nothing is ready, we hit the timeout
+    if recv:
+        (data, addr) = recv
+        try:
+            decoded = json.loads(data.decode())
+            # If the EOF flag is set, exit
+            if (decoded['eof']):
+                log("[completed]")
+                eof = True
+
+            elif (decoded['data']):
+                log("[recv data] id: %d, size: %d" % (decoded['id'], len(data)))
+                if not decoded['id'] in receivedID:
+                    received.append(decoded)
+                receivedID[decoded['id']] = True 
+                # Send back an ack to the sender
+                msg = json.dumps({"ack": decoded['id']})
+                sent = sock.sendto(msg.encode(), addr)
+                if sent < len(msg):
+                    log("[error] unable to fully send packet")
+                else:
+                    log("[send] ack: %d" % decoded['id'])
+
+        except (ValueError, KeyError, TypeError) as e:
+            log("[recv corrupt packet]")
+            raise e
+    else:
+        log("[error] timeout")
+        sys.exit(-1)
+
+received.sort(key=lambda x : x['id'])
+for packet in received:
+    sys.stdout.buffer.write(b64decode(packet['data'].encode()))
