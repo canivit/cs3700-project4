@@ -91,12 +91,14 @@ def send_next_packets():
 
 
 def retransmit_packets(packets):
+    global window
     n = min(len(packets), window)
     i = 0
     for packet_id in packets:
         send_packet(packets[packet_id])
         i += 1
-        if i > 1: break
+        if i >= n:
+            break
 
 
 def listen_and_retransmit():
