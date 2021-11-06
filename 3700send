@@ -8,8 +8,8 @@ import time
 from base64 import b64encode
 
 RECV_SIZE = 1500
-MSS = 1472
-ALPHA = 0.85
+MSS = 1470
+ALPHA = 0.8
 
 IP_PORT = sys.argv[1]
 UDP_IP = IP_PORT[0:IP_PORT.find(":")]
@@ -17,17 +17,15 @@ UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
 dest = (UDP_IP, UDP_PORT)
 
 window = 1
-target_window = 8
+target_window = 16
 last_id_sent = 0
 last_sent_packets = {}
-estimated_rtt = 500 # in miliseconds
+estimated_rtt = 550 # in miliseconds
 time_sent = 0
-
-time.sleep(.5)
 
 # Set up the socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.settimeout((estimated_rtt * 2) / 1000)
+sock.settimeout(estimated_rtt / 1000)
 
 
 def log(string):
@@ -39,7 +37,8 @@ def calc_new_rtt(sample_rtt_s):
     global estimated_rtt
     sample_rtt_ms = sample_rtt_s * 1000
     estimated_rtt = (ALPHA * estimated_rtt) + ((1 - ALPHA) * sample_rtt_ms)
-    sock.settimeout((estimated_rtt * 2) / 1000)
+    sock.settimeout(estimated_rtt  / 1000)
+    log("[new rtt] %d" % estimated_rtt)
 
 
 def send_packet(packet):
@@ -74,8 +73,8 @@ def send_next_packets():
     all_read = False
     for i in range(window):
         packet = next_packet()
-        #data_size = MSS - len(json.dumps(packet).encode())
-        data_size = 1000
+        data_size = MSS - len(json.dumps(packet).encode())
+        data_size = int(data_size / (4/3))
         data = sys.stdin.buffer.read(data_size)
         log("[read stdin] %d bytes" % data_size)
         if len(data) == 0:
@@ -100,48 +99,60 @@ def retransmit_packets(packets):
         if i >= n:
             break
 
-
-def listen_and_retransmit():
+def congestion_control(time_out, duplicate):
     global window
     global target_window
-    time_out = False
+    if time_out:            
+        window = 1
+        target_window = target_window / 2
+        log("[rto timeout] restarting slow start...")
+    else:
+        if duplicate:
+            window = window / 2
+        if window >= target_window:
+            window += 1
+        else:
+            window = window * 2            
+    if window < 1:
+        window = 1
+    if target_window < 1:
+        target_window = 1
+    log("[window change] window: %d, target window: %d" % (window, target_window))
+
+def listen_and_retransmit():
+    global estimated_rtt
+    global window
+    first_listen = True
     while len(last_sent_packets) > 0:
+        time_out = False
         received_ack = []
-        for i in range(len(last_sent_packets)):
+        for i in range(min(window, len(last_sent_packets))):
             try:
                 recv = sock.recvfrom(RECV_SIZE)
-                if i == len(last_sent_packets):
-                    calc_new_rtt(time.time() - time_sent)
+                if i == window - 1 and first_listen:
+                        calc_new_rtt(time.time() - time_sent)
                 (data, addr) = recv
                 try:
                     decoded = json.loads(data.decode())
-                    log("[recv pkt] %s" % decoded)
                     log("[recv ack] %d" % decoded["ack"])
                     received_ack.append(decoded['ack'])
                 except (ValueError, KeyError, TypeError):
                     log("[recv corrupt packet]")
             except socket.timeout:
-                time_out = True
-                log("[error] timeout")
+                time_out = True                
                 break
         for ack in received_ack:
             if ack in last_sent_packets:
-                last_sent_packets.pop(ack)        
-        if time_out:
-            window = 1
-            target_window = target_window / 2
-        else:
-            if window < target_window:
-                window = window * 2
-            else:
-                window += 1
+                last_sent_packets.pop(ack)
+        congestion_control(time_out, False)     
         retransmit_packets(last_sent_packets)
-
+        first_listen = False
 
 all_sent = False
 while not all_sent:
     all_sent = send_next_packets()
     listen_and_retransmit()
-sock.sendto(json.dumps({"eof": True, "data": "",
-            "id": last_id_sent, "ack": False}).encode(), dest)
-sys.exit(0)
+eof_ack = False
+for i in range(20):
+    sock.sendto(json.dumps({"eof": True, "data": "",
+            "id": last_id_sent, "ack": False}).encode(), dest)    
