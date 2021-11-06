@@ -32,6 +32,7 @@ receivedID = {}
 max_id = -1
 expected_id = 0
 
+# sends an ack with the given id
 def send_ack(packet_id):
     msg = json.dumps({"ack": packet_id})
     sent = sock.sendto(msg.encode(), addr)
@@ -58,9 +59,11 @@ while not eof:
             elif (decoded['data']):
                 recv_id = decoded['id']
                 log("[recv data] id: %d, size: %d" % (recv_id, len(data)))
+                # if the packet is new, add it the the list
                 if not recv_id in receivedID:
                     received.append(decoded)                
                 receivedID[recv_id] = True
+                # send ack for this packet id
                 send_ack(recv_id)
         except (ValueError, KeyError, TypeError) as e:
             log("[recv corrupt packet]")

@@ -32,7 +32,7 @@ def log(string):
     sys.stderr.write(datetime.datetime.now().strftime(
         "%H:%M:%S.%f") + " 3700send: " + string + "\n")
 
-
+# changes the timeout of the socket based on the measured sample rtt
 def calc_new_rtt(sample_rtt_s):
     global estimated_rtt
     sample_rtt_ms = sample_rtt_s * 1000
@@ -40,7 +40,7 @@ def calc_new_rtt(sample_rtt_s):
     sock.settimeout(estimated_rtt  / 1000)
     log("[new rtt] %d" % estimated_rtt)
 
-
+# encodes the given python object (the packet) and sends it
 def send_packet(packet):
     global time_sent
     global sock
@@ -52,7 +52,7 @@ def send_packet(packet):
     time_sent = time.time()
     log("[send packet] id: %d, size: %d" % (packet['id'], len(data)))
 
-
+# get the next default packet (without data)
 def next_packet():
     global last_id_sent
     packet = {
@@ -63,7 +63,8 @@ def next_packet():
     }
     return packet
 
-
+# read data from sys.in, make packets, and send them
+# number of packets to send is based on the window size 
 def send_next_packets():
     global last_id_sent
     global last_sent_packets
@@ -88,7 +89,7 @@ def send_next_packets():
         send_packet(packet)
     return all_read
 
-
+# retransmit the given packets without exceeding windows size
 def retransmit_packets(packets):
     global window
     n = min(len(packets), window)
@@ -99,7 +100,8 @@ def retransmit_packets(packets):
         if i >= n:
             break
 
-def congestion_control(time_out, duplicate):
+# adjust the windows size based on whether RTO was reached or not
+def congestion_control(time_out):
     global window
     global target_window
     if time_out:            
@@ -107,8 +109,6 @@ def congestion_control(time_out, duplicate):
         target_window = target_window / 2
         log("[rto timeout] restarting slow start...")
     else:
-        if duplicate:
-            window = window / 2
         if window >= target_window:
             window += 1
         else:
@@ -119,6 +119,7 @@ def congestion_control(time_out, duplicate):
         target_window = 1
     log("[window change] window: %d, target window: %d" % (window, target_window))
 
+# listen for acks and retransmit the packets if neccessary
 def listen_and_retransmit():
     global estimated_rtt
     global window
@@ -148,10 +149,13 @@ def listen_and_retransmit():
         retransmit_packets(last_sent_packets)
         first_listen = False
 
+# read data from sys.in and send realiably until eof file is reached
 all_sent = False
 while not all_sent:
     all_sent = send_next_packets()
     listen_and_retransmit()
+
+# send 20 eof packets to the receiver to make sure they are not dropped.
 eof_ack = False
 for i in range(20):
     sock.sendto(json.dumps({"eof": True, "data": "",
